@@ -1,70 +1,79 @@
+import argparse
 import scapy.all as scapy
+import socket
 import nmap
-import subprocess
 import requests
-import time
-import tkinter as tk
-from tkinter import messagebox
 
-def get_mac_vendor(mac_address):
+# Function to get vendor (manufacturer) of a device using MAC address
+def get_vendor(mac_address):
     url = f"https://api.macvendors.com/{mac_address}"
     try:
-        response = requests.get(url, timeout=5)
+        response = requests.get(url)
         if response.status_code == 200:
-            return response.text
-    except requests.exceptions.RequestException:
-        pass
-    return "Unknown Vendor"
+            return response.text.strip()
+        else:
+            return "Unknown Vendor"
+    except:
+        return "Vendor Lookup Failed"
 
-def scan_network(ip_range):
+# Function to perform network scan
+def scan(ip_range):
     arp_request = scapy.ARP(pdst=ip_range)
     broadcast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
     arp_request_broadcast = broadcast / arp_request
     answered_list = scapy.srp(arp_request_broadcast, timeout=2, verbose=False)[0]
 
+    print("\nIP Address\t\tMAC Address\t\tManufacturer")
+    print("-" * 70)
     devices = []
-    for element in answered_list:
-        mac_vendor = get_mac_vendor(element[1].hwsrc)
-        devices.append({
-            "IP": element[1].psrc,
-            "MAC": element[1].hwsrc,
-            "Vendor": mac_vendor
-        })
+    for response in answered_list:
+        ip = response[1].psrc
+        mac = response[1].hwsrc
+        vendor = get_vendor(mac)
+        devices.append((ip, mac, vendor))
+        print(f"{ip}\t\t{mac}\t{vendor}")
+    
     return devices
 
-def scan_wifi():
-    print("Scanning nearby Wi-Fi Access Points...")
-    subprocess.call(["sudo", "airodump-ng", "wlan0"])
+# Function to perform port scanning on a device
+def port_scan(ip):
+    scanner = nmap.PortScanner()
+    scanner.scan(ip, '1-1024', '-sV')  # Scan common ports (1-1024) with version detection
+    print(f"\n[+] Scanning Open Ports on {ip}...")
+    
+    for protocol in scanner[ip].all_protocols():
+        ports = scanner[ip][protocol].keys()
+        for port in sorted(ports):
+            service = scanner[ip][protocol][port]['name']
+            print(f"Port {port} ({service}) is open")
 
-def weak_password_scan(target_ip):
-    print(f"Starting brute-force attack on {target_ip}...")
-    subprocess.call(["hydra", "-l", "admin", "-P", "/path/to/passwords.txt", f"ssh://{target_ip}"])
+# Function to detect OS using Nmap
+def os_detection(ip):
+    scanner = nmap.PortScanner()
+    scanner.scan(ip, arguments="-O")  # OS Detection flag
+    print(f"\n[+] Detecting OS for {ip}...")
 
-def vuln_scan(target_ip):
-    print(f"Scanning for vulnerabilities on {target_ip}...")
-    subprocess.call(["sudo", "nmap", "--script", "vuln", "-p", "22,80,443", target_ip])
+    try:
+        os_info = scanner[ip]['osmatch'][0]['name']
+        print(f"OS Detected: {os_info}")
+    except:
+        print("OS Detection Failed")
 
-def live_monitoring(ip_range):
-    print("Monitoring devices on the network...")
-    while True:
-        devices = scan_network(ip_range)
-        print("\nDevices on the network:")
-        for device in devices:
-            print(f"IP: {device['IP']}, MAC: {device['MAC']}, Vendor: {device['Vendor']}")
-        time.sleep(10)
+# Setting up argument parsing
+parser = argparse.ArgumentParser(description="A Network Scanner with Device Detection, OS Identification, and Port Scanning.")
+parser.add_argument("-t", "--target", help="Specify the target IP range (e.g., 192.168.1.0/24)", required=True)
+parser.add_argument("-p", "--ports", help="Scan open ports of a specific device", action="store_true")
+parser.add_argument("-o", "--osdetect", help="Detect the OS of a specific device", action="store_true")
 
-def start_scan():
-    ip_range = ip_range_entry.get()
-    live_monitoring(ip_range)
+args = parser.parse_args()
 
-app = tk.Tk()
-app.title("Network Device Scanner")
+# Run the network scan
+devices = scan(args.target)
 
-tk.Label(app, text="Enter Network IP Range (e.g., 192.168.1.0/24)").pack(padx=10, pady=10)
-ip_range_entry = tk.Entry(app, width=30)
-ip_range_entry.pack(padx=10, pady=10)
-
-scan_button = tk.Button(app, text="Start Scan", command=start_scan)
-scan_button.pack(pady=20)
-
-app.mainloop()
+# If additional scanning options are requested, ask user for the IP to scan
+if args.ports or args.osdetect:
+    target_ip = input("\nEnter the IP address of the target device for further analysis: ")
+    if args.ports:
+        port_scan(target_ip)
+    if args.osdetect:
+        os_detection(target_ip)
